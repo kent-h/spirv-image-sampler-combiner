@@ -4,8 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use rspirv::dr::{Instruction, Operand};
 use rspirv::spirv::Op;
-use std::fs;
 use std::path::PathBuf;
+use std::fs;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -14,6 +14,8 @@ struct Args {
     file: PathBuf,
     #[arg(short, long)]
     output: Option<PathBuf>,
+    #[arg(short, long, action)]
+    verbose: bool,
 }
 
 fn main() {
@@ -37,7 +39,7 @@ fn main() {
                 // until correct OpTypeImage is reached
                 let prev = module.types_global_values.get(j - 1).unwrap();
                 if prev.class.opcode == Op::TypeImage && prev.result_id.unwrap() == image_id {
-                    println!("Moving \x1b[7m{}\x1b[0m just after related \x1b[7m{}\x1b[0m", inst.disassemble(), prev.disassemble());
+                    if args.verbose { eprintln!("Moving \x1b[7m{}\x1b[0m just after related \x1b[7m{}\x1b[0m", inst.disassemble(), prev.disassemble()); }
                     break;
                 }
 
@@ -53,16 +55,16 @@ fn main() {
 
     let mut possibly_unused = HashSet::new();
 
-    module.all_inst_iter_mut().for_each(|mut inst| {
+    module.all_inst_iter().for_each(|inst| {
         _ = match inst.class.opcode {
             Op::TypeSampledImage => {
                 replace_type.insert(inst.operands.get(0).unwrap().id_ref_any().unwrap(), inst.result_id.unwrap());
-                println!("Promoting all uses of %{} (Image) to %{} (SampledImage) via \x1b[7m{}\x1b[0m", inst.operands.get(0).unwrap().id_ref_any().unwrap(), inst.result_id.unwrap(), inst.disassemble())
+                if args.verbose { eprintln!("Promoting all uses of %{} (Image) to %{} (SampledImage) via \x1b[7m{}\x1b[0m", inst.operands.get(0).unwrap().id_ref_any().unwrap(), inst.result_id.unwrap(), inst.disassemble()); }
             }
             Op::SampledImage => {
                 possibly_unused.insert(inst.result_id.unwrap());
                 replace_op.insert(inst.result_id.unwrap(), inst.operands.get(0).unwrap().id_ref_any().unwrap());
-                println!("Replacing usage of %{} with %{} based on \x1b[7m{}\x1b[0m (the Image parameter should be promoted to SampledImage already)", inst.result_id.unwrap(), inst.operands.get(0).unwrap().id_ref_any().unwrap(), inst.disassemble());
+                if args.verbose { eprintln!("Replacing usage of %{} with %{} based on \x1b[7m{}\x1b[0m (the Image parameter should be promoted to SampledImage already)", inst.result_id.unwrap(), inst.operands.get(0).unwrap().id_ref_any().unwrap(), inst.disassemble()); }
             }
             _ => (),
         };
@@ -70,8 +72,8 @@ fn main() {
 
 
     // replace usage of OpSampledImage with the Image directly
-    module.all_inst_iter_mut().for_each(|mut inst| {
-        inst.operands.iter_mut().for_each(|mut op| {
+    module.all_inst_iter_mut().for_each(|inst| {
+        inst.operands.iter_mut().for_each(|op| {
             match op {
                 Operand::IdRef(ref mut word) => *word = *replace_op.get(&word).unwrap_or(&word),
                 _ => (),
@@ -80,14 +82,14 @@ fn main() {
     });
 
     // replace all uses of OpTypeImage with OpTypeSampledImage
-    module.all_inst_iter_mut().for_each(|mut inst| {
+    module.all_inst_iter_mut().for_each(|inst| {
         if inst.class.opcode != Op::TypeSampledImage {
             // replace result types
             if let Some(ref mut result_type) = inst.result_type {
                 *result_type = *replace_type.get(result_type).unwrap_or(result_type);
             }
             // replace op codes
-            inst.operands.iter_mut().for_each(|mut op| {
+            inst.operands.iter_mut().for_each(|op| {
                 match op {
                     Operand::IdRef(ref mut word) => *word = *replace_type.get(&word).unwrap_or(&word),
                     _ => (),
@@ -106,7 +108,7 @@ fn main() {
         });
 
         if !used {
-            module.all_inst_iter_mut().for_each(|mut inst| {
+            module.all_inst_iter_mut().for_each(|inst| {
                 if inst.result_id.is_some_and(|result_id| result_id == current_id) {
 
                     // add any referenced id_refs to the possibly_unused list
@@ -119,7 +121,7 @@ fn main() {
                         possibly_unused.insert(result_type);
                     }
 
-                    println!("Replacing now unused instruction \x1b[7m{}\x1b[0m with OpNop(no-op)", inst.disassemble());
+                    if args.verbose { eprintln!("Replacing now unused instruction \x1b[7m{}\x1b[0m with OpNop(no-op)", inst.disassemble()); }
 
                     // replace with no-op
                     *inst = Instruction::new(Op::Nop, None, None, vec![]);
